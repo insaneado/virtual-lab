@@ -8,69 +8,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import ExperimentCard from './ExperimentCard.jsx';
+import { DEMO_EXPERIMENTS } from '../../data/demoExperiments.js';
 
 const CATEGORIES  = ['all', 'mechanics', 'structures', 'machines', 'custom'];
 const DIFFICULTIES = ['all', 'beginner', 'intermediate', 'advanced'];
-
-// Demo experiments for when backend isn't running
-const DEMO_EXPERIMENTS = [
-  {
-    _id: 'demo-1', title: 'Simple Pendulum',
-    description: 'A ball swinging under gravity. Classic harmonic motion demo.',
-    category: 'mechanics', difficulty: 'beginner', tags: ['pendulum', 'gravity'],
-    forkCount: 12, thumbnail: '',
-    worldState: { gravity: { x: 0, y: 1 }, bodies: [
-      { bodyType: 'circle', position: { x: 640, y: 300 }, dimensions: { radius: 20 }, isStatic: false, material: { density: 0.004, friction: 0.01, restitution: 0.3 }, render: { fillStyle: '#6366f1', strokeStyle: '#4f46e5', lineWidth: 2 } },
-    ], constraints: [] },
-  },
-  {
-    _id: 'demo-2', title: 'Bridge Stress Test',
-    description: 'Three platforms connected by springs. Drop objects to test integrity.',
-    category: 'structures', difficulty: 'intermediate', tags: ['bridge', 'springs'],
-    forkCount: 8, thumbnail: '',
-    worldState: { gravity: { x: 0, y: 1 }, bodies: [
-      { bodyType: 'rectangle', position: { x: 400, y: 400 }, dimensions: { width: 160, height: 14 }, isStatic: true, render: { fillStyle: '#334155', strokeStyle: '#475569', lineWidth: 2 } },
-      { bodyType: 'rectangle', position: { x: 640, y: 400 }, dimensions: { width: 160, height: 14 }, isStatic: true, render: { fillStyle: '#334155', strokeStyle: '#475569', lineWidth: 2 } },
-    ], constraints: [] },
-  },
-  {
-    _id: 'demo-3', title: 'Gear Train',
-    description: 'Motor-driven wheels demonstrating rotational energy transfer.',
-    category: 'machines', difficulty: 'advanced', tags: ['motor', 'gears'],
-    forkCount: 5, thumbnail: '',
-    worldState: { gravity: { x: 0, y: 1 }, bodies: [
-      { bodyType: 'circle', position: { x: 500, y: 360 }, dimensions: { radius: 40 }, isStatic: false, material: { density: 0.002, friction: 0.8, restitution: 0.1 }, render: { fillStyle: '#f59e0b', strokeStyle: '#d97706', lineWidth: 2 } },
-    ], constraints: [] },
-  },
-  {
-    _id: 'demo-4', title: 'Newton\'s Cradle',
-    description: 'Five pendulums demonstrating conservation of momentum.',
-    category: 'mechanics', difficulty: 'intermediate', tags: ['newton', 'momentum'],
-    forkCount: 21, thumbnail: '',
-    worldState: { gravity: { x: 0, y: 1 }, bodies: [
-      { bodyType: 'circle', position: { x: 580, y: 400 }, dimensions: { radius: 18 }, isStatic: false, material: { density: 0.004, friction: 0.01, restitution: 0.99 }, render: { fillStyle: '#6366f1', strokeStyle: '#4f46e5', lineWidth: 2 } },
-      { bodyType: 'circle', position: { x: 620, y: 400 }, dimensions: { radius: 18 }, isStatic: false, material: { density: 0.004, friction: 0.01, restitution: 0.99 }, render: { fillStyle: '#22d3ee', strokeStyle: '#06b6d4', lineWidth: 2 } },
-    ], constraints: [] },
-  },
-  {
-    _id: 'demo-5', title: 'Rube Goldberg Starter',
-    description: 'Starting template for chain-reaction machines.',
-    category: 'machines', difficulty: 'beginner', tags: ['chain-reaction', 'fun'],
-    forkCount: 34, thumbnail: '',
-    worldState: { gravity: { x: 0, y: 1 }, bodies: [
-      { bodyType: 'circle', position: { x: 220, y: 250 }, dimensions: { radius: 15 }, isStatic: false, material: { density: 0.004, friction: 0.05, restitution: 0.6 }, render: { fillStyle: '#f43f5e', strokeStyle: '#e11d48', lineWidth: 2 } },
-    ], constraints: [] },
-  },
-  {
-    _id: 'demo-6', title: 'Spring Mass System',
-    description: 'Explore damped harmonic motion with adjustable parameters.',
-    category: 'mechanics', difficulty: 'advanced', tags: ['spring', 'damping'],
-    forkCount: 15, thumbnail: '',
-    worldState: { gravity: { x: 0, y: 1 }, bodies: [
-      { bodyType: 'circle', position: { x: 640, y: 350 }, dimensions: { radius: 25 }, isStatic: false, material: { density: 0.005, friction: 0.01, restitution: 0.2 }, render: { fillStyle: '#10b981', strokeStyle: '#059669', lineWidth: 2 } },
-    ], constraints: [] },
-  },
-];
 
 export default function ExperimentLibrary({ isOpen, onClose, onLoadExperiment }) {
   const [experiments, setExperiments] = useState([]);

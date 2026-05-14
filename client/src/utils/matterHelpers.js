@@ -1,21 +1,22 @@
 /**
  * client/src/utils/matterHelpers.js
  * ────────────────────────────────────────────────────────
- * Utility functions for serializing and working with
- * Matter.js bodies. These are client-side convenience
- * wrappers around the shared bodySchema format.
+ * Serialization, deserialization, and helper functions
+ * for Matter.js worlds.
  * ────────────────────────────────────────────────────────
  */
 
 import Matter from 'matter-js';
 
+const { Bodies, World, Body: MBody, Constraint } = Matter;
+
 /**
- * Serialize all non-static bodies in a world to a plain array.
- * Useful for saving experiments or doing a full-state broadcast.
+ * Serialize ALL bodies (including static platforms) and constraints.
  */
 export function serializeWorld(world) {
+  // We keep ground/walls out (they're auto-created by the engine hook)
   const bodies = world.bodies
-    .filter(b => !b.isStatic)
+    .filter(b => b._bodyType) // only user-created bodies have _bodyType
     .map(b => ({
       id:              b.id,
       label:           b.label,
@@ -51,31 +52,31 @@ export function serializeWorld(world) {
       stiffness: c.stiffness,
       damping:   c.damping,
       length:    c.length,
+      render:    c.render ? { strokeStyle: c.render.strokeStyle, lineWidth: c.render.lineWidth } : {},
     }));
 
   return {
-    gravity: {
-      x: world.gravity.x,
-      y: world.gravity.y,
-    },
+    gravity: { x: world.gravity.x, y: world.gravity.y },
     bodies,
     constraints,
   };
 }
 
 /**
- * Restore bodies from a serialized world state into a live engine.
- * Clears all existing non-static bodies first.
+ * Restore a complete world state — bodies + constraints.
+ * Handles all body types: circle, rectangle, triangle, platform.
  */
 export function restoreWorld(engine, worldState) {
   if (!worldState) return;
 
-  const { Bodies, World, Body: MBody } = Matter;
   const world = engine.world;
 
-  // Clear existing dynamic bodies
-  const toRemove = world.bodies.filter(b => !b.isStatic);
+  // Clear existing user-created bodies (keep ground/walls)
+  const toRemove = world.bodies.filter(b => b._bodyType);
   World.remove(world, toRemove);
+  // Clear existing constraints (keep mouse)
+  const constraintsToRemove = world.constraints.filter(c => c.label !== 'Mouse Constraint');
+  World.remove(world, constraintsToRemove);
 
   // Set gravity
   if (worldState.gravity) {
@@ -83,47 +84,96 @@ export function restoreWorld(engine, worldState) {
     world.gravity.y = worldState.gravity.y;
   }
 
+  // id map: old serialized id -> new live body (for constraint wiring)
+  const idMap = new Map();
+
   // Recreate bodies
   for (const bd of (worldState.bodies || [])) {
     let body;
+    const renderOpts = bd.render || {};
+    const matOpts = {
+      isStatic:    bd.isStatic || false,
+      render:      renderOpts,
+      density:     bd.material?.density,
+      friction:    bd.material?.friction,
+      restitution: bd.material?.restitution,
+    };
 
-    if (bd.bodyType === 'circle') {
-      const r = bd.dimensions?.radius || 25;
-      body = Bodies.circle(bd.position.x, bd.position.y, r, {
-        isStatic: bd.isStatic || false,
-        render: bd.render || {},
-        density: bd.material?.density,
-        friction: bd.material?.friction,
-        restitution: bd.material?.restitution,
-      });
-      body._dimensions = { radius: r };
-    } else {
-      const w = bd.dimensions?.width || 50;
-      const h = bd.dimensions?.height || 50;
-      body = Bodies.rectangle(bd.position.x, bd.position.y, w, h, {
-        isStatic: bd.isStatic || false,
-        render: bd.render || {},
-        density: bd.material?.density,
-        friction: bd.material?.friction,
-        restitution: bd.material?.restitution,
-      });
-      body._dimensions = { width: w, height: h };
+    switch (bd.bodyType) {
+      case 'circle': {
+        const r = bd.dimensions?.radius || 25;
+        body = Bodies.circle(bd.position.x, bd.position.y, r, matOpts);
+        body._dimensions = { radius: r };
+        break;
+      }
+      case 'triangle': {
+        const size = bd.dimensions?.size || 50;
+        body = Bodies.polygon(bd.position.x, bd.position.y, 3, size / 1.5, matOpts);
+        body._dimensions = { size };
+        break;
+      }
+      case 'platform': {
+        const w = bd.dimensions?.width || 200;
+        const h = bd.dimensions?.height || 16;
+        body = Bodies.rectangle(bd.position.x, bd.position.y, w, h, { ...matOpts, isStatic: true });
+        body._dimensions = { width: w, height: h };
+        break;
+      }
+      default: { // rectangle
+        const w = bd.dimensions?.width || 50;
+        const h = bd.dimensions?.height || 50;
+        body = Bodies.rectangle(bd.position.x, bd.position.y, w, h, matOpts);
+        body._dimensions = { width: w, height: h };
+        break;
+      }
     }
 
     body._bodyType = bd.bodyType;
-    body.label = bd.label || `body_${body.id}`;
+    body.label = bd.label || `${bd.bodyType}_${body.id}`;
 
     if (bd.angle) MBody.setAngle(body, bd.angle);
-    if (bd.velocity) MBody.setVelocity(body, bd.velocity);
-    if (bd.angularVelocity) MBody.setAngularVelocity(body, bd.angularVelocity);
+    if (bd.velocity && !bd.isStatic) MBody.setVelocity(body, bd.velocity);
+    if (bd.angularVelocity && !bd.isStatic) MBody.setAngularVelocity(body, bd.angularVelocity);
 
+    idMap.set(bd.id, body);
     World.add(world, body);
   }
+
+  // Recreate constraints
+  for (const cd of (worldState.constraints || [])) {
+    const bodyA = cd.bodyAId ? idMap.get(cd.bodyAId) : null;
+    const bodyB = cd.bodyBId ? idMap.get(cd.bodyBId) : null;
+
+    // skip if referenced bodies don't exist
+    if (cd.bodyAId && !bodyA) continue;
+    if (cd.bodyBId && !bodyB) continue;
+
+    const constraint = Constraint.create({
+      bodyA: bodyA || undefined,
+      bodyB: bodyB || undefined,
+      pointA: (!bodyA && cd.pointA) ? cd.pointA : { x: 0, y: 0 },
+      pointB: (!bodyB && cd.pointB) ? cd.pointB : { x: 0, y: 0 },
+      stiffness: cd.stiffness ?? 1,
+      damping:   cd.damping ?? 0,
+      length:    cd.length ?? 0,
+      render: {
+        strokeStyle: cd.render?.strokeStyle || '#f59e0b',
+        lineWidth:   cd.render?.lineWidth || 2,
+        visible: true,
+      },
+    });
+
+    constraint._constraintType = cd.type || 'pin';
+    constraint.label = cd.label || `${cd.type}_${constraint.id}`;
+
+    World.add(world, constraint);
+  }
+
+  return idMap;
 }
 
 /**
  * Pick a random vibrant color from our palette.
- * Used when spawning new bodies to keep things visually varied.
  */
 const BODY_COLORS = [
   '#6366f1', '#8b5cf6', '#a855f7',  // Purples
