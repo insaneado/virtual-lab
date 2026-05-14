@@ -4,17 +4,15 @@
  * Custom hook that owns the entire Matter.js lifecycle.
  *
  * Returns refs to the engine, world, and render, plus
- * control functions (pause, resume, reset). The engine
- * runs on requestAnimationFrame — we never use
+ * control functions (pause, resume, reset, addBody,
+ * addConstraint, updateBody, removeConstraint).
+ *
+ * The engine runs on requestAnimationFrame — we never use
  * Matter.Runner because it doesn't give us frame-budget
  * control and will fight with React's update cycle.
  *
- * The hook manages:
- *   - Engine + World creation
- *   - Render (canvas) creation and mounting
- *   - Mouse + MouseConstraint for drag interaction
- *   - Manual rAF loop with fixed timestep
- *   - Full cleanup on unmount
+ * Motors are simulated per-tick by checking bodies tagged
+ * with _motorSpeed and injecting angular velocity.
  * ────────────────────────────────────────────────────────
  */
 
@@ -24,7 +22,21 @@ import Matter from 'matter-js';
 const {
   Engine, Render, World, Mouse,
   MouseConstraint, Bodies, Events, Body,
+  Constraint, Query, Composite,
 } = Matter;
+
+// preset config per constraint type
+const CONSTRAINT_PRESETS = {
+  pin:    { stiffness: 1,    damping: 0,    length: 0   },
+  spring: { stiffness: 0.04, damping: 0.01, length: null },
+  rope:   { stiffness: 0.8,  damping: 0.05, length: null },
+};
+
+const CONSTRAINT_STYLES = {
+  pin:    { strokeStyle: '#f59e0b', lineWidth: 3 },
+  spring: { strokeStyle: '#10b981', lineWidth: 2, type: 'spring' },
+  rope:   { strokeStyle: '#94a3b8', lineWidth: 2, lineDash: '6 4' },
+};
 
 export default function usePhysicsEngine(canvasContainerRef, options = {}) {
   const {
@@ -40,6 +52,7 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
   const renderRef  = useRef(null);
   const rafIdRef   = useRef(null);
   const runningRef = useRef(false);
+  const motorsRef  = useRef(new Map()); // bodyId -> speed
 
   const [isRunning, setIsRunning] = useState(false);
 
@@ -48,14 +61,12 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
     const container = canvasContainerRef.current;
     if (!container) return;
 
-    // Create the physics engine
     const engine = Engine.create({
       gravity: { x: gravity.x, y: gravity.y, scale: 0.001 },
       positionIterations: 6,
       velocityIterations: 4,
     });
 
-    // Create the canvas renderer
     const render = Render.create({
       element: container,
       engine: engine,
@@ -86,16 +97,13 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
     });
 
     World.add(engine.world, mouseConstraint);
-
-    // Keep the render's internal mouse in sync
     render.mouse = mouse;
 
-    // Store refs
     engineRef.current = engine;
     renderRef.current = render;
 
-    // Add ground and walls so things don't fall into the void
-    const wallOptions = {
+    // ground and walls
+    const wallOpts = {
       isStatic: true,
       render: {
         fillStyle: '#1e293b',
@@ -104,19 +112,14 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
       },
     };
 
-    const ground = Bodies.rectangle(width / 2, height + 25, width + 100, 50, wallOptions);
-    const leftWall = Bodies.rectangle(-25, height / 2, 50, height, wallOptions);
-    const rightWall = Bodies.rectangle(width + 25, height / 2, 50, height, wallOptions);
+    const ground    = Bodies.rectangle(width / 2, height + 25, width + 100, 50, wallOpts);
+    const leftWall  = Bodies.rectangle(-25, height / 2, 50, height, wallOpts);
+    const rightWall = Bodies.rectangle(width + 25, height / 2, 50, height, wallOpts);
 
     World.add(engine.world, [ground, leftWall, rightWall]);
-
-    // Start rendering (visual only — physics loop is separate)
     Render.run(render);
-
-    // Start the physics loop
     startLoop(engine);
 
-    // ─── Cleanup ──────────────────────────────────────
     return () => {
       stopLoop();
       Render.stop(render);
@@ -126,17 +129,28 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
       render.textures = {};
       engineRef.current = null;
       renderRef.current = null;
+      motorsRef.current.clear();
     };
-  }, []);  // Run once on mount
+  }, []);
 
   // ─── Fixed-timestep physics loop ───────────────────
   const startLoop = useCallback((engine) => {
-    const dt = 1000 / 60;  // 16.67ms per tick
+    const dt = 1000 / 60;
     runningRef.current = true;
     setIsRunning(true);
 
     function tick() {
       if (!runningRef.current) return;
+
+      // --- Motor tick: inject angular velocity on tagged bodies ---
+      motorsRef.current.forEach((speed, bodyId) => {
+        const bodies = engine.world.bodies;
+        const b = bodies.find(x => x.id === bodyId);
+        if (b && !b.isStatic) {
+          Body.setAngularVelocity(b, speed);
+        }
+      });
+
       Engine.update(engine, dt);
       rafIdRef.current = requestAnimationFrame(tick);
     }
@@ -154,8 +168,7 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
   }, []);
 
   // ─── Public control methods ────────────────────────
-  const pause = useCallback(() => stopLoop(), [stopLoop]);
-
+  const pause  = useCallback(() => stopLoop(), [stopLoop]);
   const resume = useCallback(() => {
     if (engineRef.current && !runningRef.current) {
       startLoop(engineRef.current);
@@ -165,24 +178,16 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
   const reset = useCallback(() => {
     if (!engineRef.current) return;
     const engine = engineRef.current;
-
-    // Remove all non-static bodies
     const bodiesToRemove = engine.world.bodies.filter(b => !b.isStatic);
     World.remove(engine.world, bodiesToRemove);
-
-    // Remove all constraints except the mouse constraint
     const constraintsToRemove = engine.world.constraints.filter(
       c => c.label !== 'Mouse Constraint'
     );
     World.remove(engine.world, constraintsToRemove);
+    motorsRef.current.clear();
   }, []);
 
-  /**
-   * Add a body to the world.
-   * @param {'rectangle'|'circle'} type
-   * @param {Object} opts - { x, y, width, height, radius, options }
-   * @returns {Matter.Body}
-   */
+  // ─── Add body ──────────────────────────────────────
   const addBody = useCallback((type, opts = {}) => {
     if (!engineRef.current) return null;
 
@@ -204,6 +209,35 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
       });
       body._bodyType = 'circle';
       body._dimensions = { radius };
+    } else if (type === 'triangle') {
+      const size = opts.size || 50;
+      body = Bodies.polygon(x, y, 3, size / 1.5, {
+        restitution: 0.4,
+        friction: 0.1,
+        render: {
+          fillStyle: opts.color || '#f59e0b',
+          strokeStyle: '#d97706',
+          lineWidth: 2,
+        },
+        ...opts.options,
+      });
+      body._bodyType = 'triangle';
+      body._dimensions = { size };
+    } else if (type === 'platform') {
+      // static platform for building structures
+      const w = opts.width || 200;
+      const h = opts.height || 16;
+      body = Bodies.rectangle(x, y, w, h, {
+        isStatic: true,
+        render: {
+          fillStyle: opts.color || '#334155',
+          strokeStyle: '#475569',
+          lineWidth: 2,
+        },
+        ...opts.options,
+      });
+      body._bodyType = 'platform';
+      body._dimensions = { width: w, height: h };
     } else {
       const w = opts.width || 50;
       const h = opts.height || 50;
@@ -226,6 +260,163 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
     return body;
   }, [width]);
 
+  // ─── Add constraint ───────────────────────────────
+  const addConstraint = useCallback((type, bodyA, bodyB, opts = {}) => {
+    if (!engineRef.current) return null;
+
+    // for motors, we don't create a matter constraint
+    if (type === 'motor') {
+      if (bodyA) {
+        const speed = opts.motorSpeed || 0.05;
+        motorsRef.current.set(bodyA.id, speed);
+        bodyA._motorSpeed = speed;
+        bodyA._hasMotor = true;
+      }
+      return { _type: 'motor', bodyId: bodyA?.id };
+    }
+
+    const preset = CONSTRAINT_PRESETS[type] || CONSTRAINT_PRESETS.pin;
+    const style  = CONSTRAINT_STYLES[type] || CONSTRAINT_STYLES.pin;
+
+    // figure out the length — for pin it's always 0,
+    // for spring/rope auto-calculate from current distance
+    let constraintLength = preset.length;
+    if (constraintLength === null && bodyA && bodyB) {
+      const dx = bodyB.position.x - bodyA.position.x;
+      const dy = bodyB.position.y - bodyA.position.y;
+      constraintLength = Math.sqrt(dx * dx + dy * dy);
+    }
+
+    const constraint = Constraint.create({
+      bodyA,
+      bodyB,
+      stiffness: opts.stiffness ?? preset.stiffness,
+      damping:   opts.damping ?? preset.damping,
+      length:    opts.length ?? constraintLength ?? 0,
+      render: {
+        strokeStyle: style.strokeStyle,
+        lineWidth:   style.lineWidth,
+        visible: true,
+        type: style.type || undefined,
+      },
+    });
+
+    constraint._constraintType = type;
+    constraint.label = `${type}_${constraint.id}`;
+
+    World.add(engineRef.current.world, constraint);
+    return constraint;
+  }, []);
+
+  // ─── Remove constraint ────────────────────────────
+  const removeConstraint = useCallback((constraintOrId) => {
+    if (!engineRef.current) return;
+    const world = engineRef.current.world;
+
+    if (typeof constraintOrId === 'object') {
+      World.remove(world, constraintOrId);
+    } else {
+      const c = world.constraints.find(x => x.id === constraintOrId);
+      if (c) World.remove(world, c);
+    }
+  }, []);
+
+  // ─── Update body properties live ──────────────────
+  const updateBody = useCallback((bodyId, props) => {
+    if (!engineRef.current) return;
+    const body = engineRef.current.world.bodies.find(b => b.id === bodyId);
+    if (!body) return;
+
+    if (props.density !== undefined) {
+      Body.setDensity(body, props.density);
+    }
+    if (props.friction !== undefined) {
+      body.friction = props.friction;
+    }
+    if (props.restitution !== undefined) {
+      body.restitution = props.restitution;
+    }
+    if (props.isStatic !== undefined) {
+      Body.setStatic(body, props.isStatic);
+    }
+    if (props.fillStyle !== undefined) {
+      body.render.fillStyle = props.fillStyle;
+    }
+    if (props.strokeStyle !== undefined) {
+      body.render.strokeStyle = props.strokeStyle;
+    }
+    if (props.angle !== undefined) {
+      Body.setAngle(body, props.angle);
+    }
+  }, []);
+
+  // ─── Update constraint properties live ────────────
+  const updateConstraint = useCallback((constraintId, props) => {
+    if (!engineRef.current) return;
+    const c = engineRef.current.world.constraints.find(x => x.id === constraintId);
+    if (!c) return;
+
+    if (props.stiffness !== undefined) c.stiffness = props.stiffness;
+    if (props.damping   !== undefined) c.damping   = props.damping;
+    if (props.length    !== undefined) c.length    = props.length;
+  }, []);
+
+  // ─── Update motor speed ───────────────────────────
+  const setMotorSpeed = useCallback((bodyId, speed) => {
+    if (speed === 0) {
+      motorsRef.current.delete(bodyId);
+    } else {
+      motorsRef.current.set(bodyId, speed);
+    }
+    // also update the body tag so it shows in the properties panel
+    if (engineRef.current) {
+      const body = engineRef.current.world.bodies.find(b => b.id === bodyId);
+      if (body) body._motorSpeed = speed;
+    }
+  }, []);
+
+  // ─── Remove body ──────────────────────────────────
+  const removeBody = useCallback((bodyId) => {
+    if (!engineRef.current) return;
+    const world = engineRef.current.world;
+    const body = world.bodies.find(b => b.id === bodyId);
+    if (!body) return;
+
+    // also remove any constraints attached to this body
+    const attached = world.constraints.filter(
+      c => (c.bodyA && c.bodyA.id === bodyId) || (c.bodyB && c.bodyB.id === bodyId)
+    );
+    attached.forEach(c => World.remove(world, c));
+
+    // remove motor if any
+    motorsRef.current.delete(bodyId);
+
+    World.remove(world, body);
+  }, []);
+
+  // ─── Hit test ─────────────────────────────────────
+  const getBodyAtPosition = useCallback((x, y) => {
+    if (!engineRef.current) return null;
+    const hits = Query.point(engineRef.current.world.bodies, { x, y });
+    // return the first non-static body, or the first static, or null
+    const dynamic = hits.find(b => !b.isStatic);
+    return dynamic || hits[0] || null;
+  }, []);
+
+  // ─── Get all non-mouse constraints ────────────────
+  const getConstraints = useCallback(() => {
+    if (!engineRef.current) return [];
+    return engineRef.current.world.constraints.filter(
+      c => c.label !== 'Mouse Constraint'
+    );
+  }, []);
+
+  // ─── Get all dynamic bodies ───────────────────────
+  const getBodies = useCallback(() => {
+    if (!engineRef.current) return [];
+    return engineRef.current.world.bodies.filter(b => !b.isStatic || b._bodyType === 'platform');
+  }, []);
+
   return {
     engineRef,
     renderRef,
@@ -234,5 +425,15 @@ export default function usePhysicsEngine(canvasContainerRef, options = {}) {
     resume,
     reset,
     addBody,
+    addConstraint,
+    removeConstraint,
+    updateBody,
+    updateConstraint,
+    setMotorSpeed,
+    removeBody,
+    getBodyAtPosition,
+    getConstraints,
+    getBodies,
+    motorsRef,
   };
 }
