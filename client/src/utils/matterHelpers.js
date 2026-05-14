@@ -148,20 +148,22 @@ export function restoreWorld(engine, worldState) {
     if (cd.bodyAId && !bodyA) continue;
     if (cd.bodyBId && !bodyB) continue;
 
-    const constraint = Constraint.create({
-      bodyA: bodyA || undefined,
-      bodyB: bodyB || undefined,
-      pointA: (!bodyA && cd.pointA) ? cd.pointA : { x: 0, y: 0 },
-      pointB: (!bodyB && cd.pointB) ? cd.pointB : { x: 0, y: 0 },
+    const cOpts = {
       stiffness: cd.stiffness ?? 1,
       damping:   cd.damping ?? 0,
       length:    cd.length ?? 0,
-      render: {
-        strokeStyle: cd.render?.strokeStyle || '#f59e0b',
-        lineWidth:   cd.render?.lineWidth || 2,
-        visible: true,
-      },
-    });
+      render: { strokeStyle: cd.render?.strokeStyle || '#f59e0b', lineWidth: cd.render?.lineWidth || 2, visible: true },
+    };
+
+    // When bodyA is null, pointA is world-space (anchor point in space)
+    // When bodyA exists, pointA is local offset from body center
+    if (bodyA) { cOpts.bodyA = bodyA; cOpts.pointA = cd.pointA || { x: 0, y: 0 }; }
+    else if (cd.pointA) { cOpts.pointA = cd.pointA; }
+
+    if (bodyB) { cOpts.bodyB = bodyB; cOpts.pointB = cd.pointB || { x: 0, y: 0 }; }
+    else if (cd.pointB) { cOpts.pointB = cd.pointB; }
+
+    const constraint = Constraint.create(cOpts);
 
     constraint._constraintType = cd.type || 'pin';
     constraint.label = cd.label || `${cd.type}_${constraint.id}`;
