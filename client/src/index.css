@@ -843,3 +843,119 @@ select.save-input {
 .constraint-cursor canvas {
   cursor: crosshair !important;
 }
+
+/* ================================================================
+   Tutorial / Onboarding Overlay
+   ================================================================ */
+
+.tutorial-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(6px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tutorial-card {
+  width: 460px;
+  max-width: 90vw;
+  padding: 32px;
+  text-align: center;
+}
+
+.tutorial-step-indicator {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+
+.tutorial-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-surface-600);
+  transition: all 0.3s;
+}
+
+.tutorial-dot.active {
+  background: var(--color-accent-indigo);
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.5);
+  transform: scale(1.3);
+}
+
+.tutorial-dot.done {
+  background: var(--color-accent-emerald);
+}
+
+.tutorial-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--color-text-primary);
+}
+
+.tutorial-text {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  margin-bottom: 24px;
+}
+
+.tutorial-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.tutorial-btn-primary {
+  padding: 10px 28px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tutorial-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+}
+
+.tutorial-btn-secondary {
+  padding: 10px 20px;
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.8);
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tutorial-btn-secondary:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+  color: var(--color-text-primary);
+}
+
+.tutorial-skip {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  transition: color 0.2s;
+}
+
+.tutorial-skip:hover {
+  color: var(--color-text-secondary);
+}
