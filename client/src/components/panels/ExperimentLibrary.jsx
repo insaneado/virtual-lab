@@ -1,127 +1,197 @@
-/**
- * client/src/components/panels/ExperimentLibrary.jsx
- * ────────────────────────────────────────────────────────
- * Full-screen modal gallery for browsing, searching,
- * and loading saved physics experiments.
- * ────────────────────────────────────────────────────────
- */
-
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { memo, useEffect, useMemo, useState } from 'react';
+import PropTypes from 'prop-types';
+import html2canvas from 'html2canvas';
+import toast from 'react-hot-toast';
+import { Grid } from 'react-window';
+import { experimentsAPI } from '../../services/api.js';
 import ExperimentCard from './ExperimentCard.jsx';
-import { DEMO_EXPERIMENTS } from '../../data/demoExperiments.js';
+import SaveExperimentModal from './SaveExperimentModal.jsx';
 
-const CATEGORIES  = ['all', 'mechanics', 'structures', 'machines', 'custom'];
-const DIFFICULTIES = ['all', 'beginner', 'intermediate', 'advanced'];
+const TAGS = ['mechanics', 'energy', 'forces', 'pendulum', 'spring', 'structures'];
 
-export default function ExperimentLibrary({ isOpen, onClose, onLoadExperiment }) {
-  const [experiments, setExperiments] = useState([]);
-  const [loading, setLoading]         = useState(false);
-  const [search, setSearch]           = useState('');
-  const [category, setCategory]       = useState('all');
-  const [difficulty, setDifficulty]   = useState('all');
-  const [page, setPage]               = useState(1);
-  const [totalPages, setTotalPages]   = useState(1);
-
-  const fetchExperiments = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams({ page, limit: 12 });
-      if (category !== 'all') params.set('category', category);
-      if (difficulty !== 'all') params.set('difficulty', difficulty);
-      if (search.trim()) params.set('search', search.trim());
-
-      const res = await fetch(`/api/experiments?${params}`);
-      if (res.ok) {
-        const data = await res.json();
-        setExperiments(data.experiments || []);
-        setTotalPages(data.pagination?.pages || 1);
-      } else {
-        setExperiments(DEMO_EXPERIMENTS);
-      }
-    } catch {
-      setExperiments(DEMO_EXPERIMENTS);
-    }
-    setLoading(false);
-  }, [page, category, difficulty, search]);
-
-  useEffect(() => {
-    if (isOpen) fetchExperiments();
-  }, [isOpen, fetchExperiments]);
-
-  const handleLoad = (experiment) => {
-    if (experiment.worldState) {
-      onLoadExperiment(experiment.worldState);
-      onClose();
-    }
-  };
-
-  const handleFork = (experiment) => {
-    alert(`Fork of "${experiment.title}" — requires authentication to save.`);
-  };
-
-  if (!isOpen) return null;
-
+function VirtualCell({ columnIndex, rowIndex, style, experiments: items, onLoad, onShare }) {
+  const experiment = items[rowIndex * 3 + columnIndex];
+  if (!experiment) return null;
   return (
-    <div className="library-overlay" onClick={onClose}>
-      <div className="library-modal glass-panel animate-fade-in" onClick={e => e.stopPropagation()}>
-        <div className="library-header">
-          <div>
-            <h2 className="library-title">Experiment Library</h2>
-            <p className="library-subtitle">Browse, load, and fork physics scenarios</p>
-          </div>
-          <button className="toolbar-btn" onClick={onClose} style={{ width: 32, height: 32 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="library-filters">
-          <div className="search-box">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-            <input type="text" placeholder="Search experiments..." value={search}
-              onChange={e => { setSearch(e.target.value); setPage(1); }} />
-          </div>
-          <div className="filter-group">
-            {CATEGORIES.map(c => (
-              <button key={c} className={`filter-chip ${category === c ? 'active' : ''}`}
-                onClick={() => { setCategory(c); setPage(1); }}>
-                {c === 'all' ? 'All' : c.charAt(0).toUpperCase() + c.slice(1)}
-              </button>
-            ))}
-          </div>
-          <div className="filter-group">
-            {DIFFICULTIES.map(d => (
-              <button key={d} className={`filter-chip ${difficulty === d ? 'active' : ''}`}
-                onClick={() => { setDifficulty(d); setPage(1); }}>
-                {d === 'all' ? 'All Levels' : d.charAt(0).toUpperCase() + d.slice(1)}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="library-grid">
-          {loading ? (
-            <div className="library-empty">Loading...</div>
-          ) : experiments.length === 0 ? (
-            <div className="library-empty">No experiments found.</div>
-          ) : (
-            experiments.map((exp, i) => (
-              <ExperimentCard key={exp._id || i} experiment={exp} onLoad={handleLoad} onFork={handleFork} />
-            ))
-          )}
-        </div>
-
-        {totalPages > 1 && (
-          <div className="library-pagination">
-            <button disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="page-btn">← Prev</button>
-            <span className="page-info">Page {page} of {totalPages}</span>
-            <button disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} className="page-btn">Next →</button>
-          </div>
-        )}
-      </div>
+    <div style={{ ...style, padding: 8 }}>
+      <ExperimentCard experiment={experiment} onLoad={onLoad} onShare={onShare} />
     </div>
   );
 }
+
+VirtualCell.propTypes = {
+  columnIndex: PropTypes.number.isRequired,
+  rowIndex: PropTypes.number.isRequired,
+  style: PropTypes.object.isRequired,
+  experiments: PropTypes.array.isRequired,
+  onLoad: PropTypes.func.isRequired,
+  onShare: PropTypes.func.isRequired,
+};
+
+function useDebounced(value, delay) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(id);
+  }, [delay, value]);
+  return debounced;
+}
+
+function ExperimentLibrary({ open, onClose, currentSnapshot, onLoadExperiment, roomJoinLink }) {
+  const [experiments, setExperiments] = useState([]);
+  const [search, setSearch] = useState('');
+  const [selectedTags, setSelectedTags] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [showSave, setShowSave] = useState(false);
+  const debouncedSearch = useDebounced(search, 300);
+  const isCanvasDirty = Boolean(currentSnapshot?.bodies?.length || currentSnapshot?.constraints?.length);
+
+  useEffect(() => {
+    if (!open) return;
+    async function fetchExperiments() {
+      try {
+        const data = await experimentsAPI.list({
+          search: debouncedSearch,
+          tags: selectedTags.join(','),
+          limit: 80,
+        });
+        setExperiments(data.experiments || []);
+      } catch (err) {
+        toast.error(err.message);
+      }
+    }
+    fetchExperiments();
+  }, [debouncedSearch, open, selectedTags]);
+
+  const visibleTags = useMemo(() => TAGS, []);
+
+  async function saveExperiment(meta) {
+    setSaving(true);
+    try {
+      const host = document.querySelector('.matter-host');
+      const thumbnail = host
+        ? (await html2canvas(host, { backgroundColor: '#0a0e17', scale: 0.5 })).toDataURL('image/png')
+        : '';
+      await experimentsAPI.create({
+        ...meta,
+        thumbnail,
+        bodySnapshot: currentSnapshot?.bodies || [],
+        constraintSnapshot: currentSnapshot?.constraints || [],
+      });
+      toast.success('Experiment saved.');
+      setShowSave(false);
+      const data = await experimentsAPI.list({ limit: 80 });
+      setExperiments(data.experiments || []);
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loadExperiment(experiment) {
+    try {
+      if (isCanvasDirty && !window.confirm('Load this experiment and replace the current canvas?')) return;
+      const full = experiment.bodySnapshot ? experiment : await experimentsAPI.get(experiment.id || experiment._id);
+      onLoadExperiment({
+        bodies: full.bodySnapshot || full.worldState?.bodies || [],
+        constraints: full.constraintSnapshot || full.worldState?.constraints || [],
+      });
+      onClose();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
+  async function shareExperiment() {
+    try {
+      await navigator.clipboard.writeText(roomJoinLink);
+      toast.success('Room link copied.');
+    } catch {
+      toast.error('Could not copy room link.');
+    }
+  }
+
+  if (!open) return null;
+
+  return (
+    <div className="modal-backdrop">
+      <section className="library-dialog">
+        <header className="library-top">
+          <div>
+            <h2>Experiment Library</h2>
+            <p>{experiments.length} templates</p>
+          </div>
+          <div className="library-actions">
+            <button type="button" className="primary-btn" disabled={saving} onClick={() => setShowSave(true)}>
+              Save Current Lab
+            </button>
+            <button type="button" className="icon-btn" onClick={onClose}>X</button>
+          </div>
+        </header>
+
+        <div className="library-filters">
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search experiments" />
+          <div className="tag-row">
+            {visibleTags.map((tag) => (
+              <button
+                key={tag}
+                className={selectedTags.includes(tag) ? 'active' : ''}
+                type="button"
+                onClick={() => setSelectedTags((current) => (
+                  current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag]
+                ))}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {experiments.length > 50 ? (
+          <Grid
+            cellComponent={VirtualCell}
+            cellProps={{
+              experiments,
+              onLoad: loadExperiment,
+              onShare: shareExperiment,
+            }}
+            columnCount={3}
+            columnWidth={320}
+            defaultHeight={520}
+            defaultWidth={1000}
+            rowCount={Math.ceil(experiments.length / 3)}
+            rowHeight={300}
+            style={{ height: 520, width: '100%' }}
+          />
+        ) : (
+          <div className="library-grid">
+            {experiments.map((experiment) => (
+              <ExperimentCard
+                key={experiment.id || experiment._id}
+                experiment={experiment}
+                onLoad={loadExperiment}
+                onShare={shareExperiment}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+      <SaveExperimentModal open={showSave} onClose={() => setShowSave(false)} onSave={saveExperiment} />
+    </div>
+  );
+}
+
+ExperimentLibrary.propTypes = {
+  open: PropTypes.bool.isRequired,
+  onClose: PropTypes.func.isRequired,
+  currentSnapshot: PropTypes.object,
+  onLoadExperiment: PropTypes.func.isRequired,
+  roomJoinLink: PropTypes.string.isRequired,
+};
+
+ExperimentLibrary.defaultProps = {
+  currentSnapshot: null,
+};
+
+export default memo(ExperimentLibrary);

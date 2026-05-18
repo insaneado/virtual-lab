@@ -1,52 +1,51 @@
-/**
- * client/src/services/api.js
- * ────────────────────────────────────────────────────────
- * REST API client for experiments and rooms.
- * Wraps fetch with base URL and error handling.
- * ────────────────────────────────────────────────────────
- */
-
-const BASE = import.meta.env.VITE_API_URL || '/api';
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 async function request(endpoint, options = {}) {
-  const url = `${BASE}${endpoint}`;
-
-  const config = {
-    headers: { 'Content-Type': 'application/json' },
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
     ...options,
-  };
+    body: options.body && typeof options.body !== 'string'
+      ? JSON.stringify(options.body)
+      : options.body,
+  });
 
-  if (config.body && typeof config.body === 'object') {
-    config.body = JSON.stringify(config.body);
+  if (response.status === 204) return null;
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = data.error || `Request failed with status ${response.status}`;
+    throw new Error(message);
   }
 
-  const res = await fetch(url, config);
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || `Request failed: ${res.status}`);
-  }
-
-  return res.json();
+  return data;
 }
 
-// ─── Experiments ────────────────────────────────────────
-
-export const experimentsAPI = {
-  list:   (params = {}) => {
-    const qs = new URLSearchParams(params).toString();
-    return request(`/experiments${qs ? `?${qs}` : ''}`);
-  },
-  get:    (id) => request(`/experiments/${id}`),
-  create: (data) => request('/experiments', { method: 'POST', body: data }),
-  update: (id, data) => request(`/experiments/${id}`, { method: 'PUT', body: data }),
-  delete: (id) => request(`/experiments/${id}`, { method: 'DELETE' }),
-  fork:   (id, authorId) => request(`/experiments/${id}/fork`, { method: 'POST', body: { authorId } }),
+export const authAPI = {
+  me: () => request('/auth/me'),
+  register: (payload) => request('/auth/register', { method: 'POST', body: payload }),
+  login: (payload) => request('/auth/login', { method: 'POST', body: payload }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
 };
-
-// ─── Rooms ──────────────────────────────────────────────
 
 export const roomsAPI = {
-  check: (code) => request(`/rooms/${code}`),
-  list:  () => request('/rooms'),
+  create: (payload) => request('/rooms', { method: 'POST', body: payload }),
+  get: (id) => request(`/rooms/${encodeURIComponent(id)}`),
+  remove: (id) => request(`/rooms/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 };
+
+export const experimentsAPI = {
+  list: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/experiments${query ? `?${query}` : ''}`);
+  },
+  get: (id) => request(`/experiments/${encodeURIComponent(id)}`),
+  create: (payload) => request('/experiments', { method: 'POST', body: payload }),
+  update: (id, payload) => request(`/experiments/${encodeURIComponent(id)}`, { method: 'PUT', body: payload }),
+  remove: (id) => request(`/experiments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+};
+
+export default request;

@@ -1,55 +1,59 @@
-/**
- * server/src/models/User.js
- * ────────────────────────────────────────────────────────
- * User profile schema. For the prototype phase we're
- * keeping auth lightweight — no password hashing yet.
- * The savedExperiments array gives us a quick "my labs"
- * lookup without a separate junction collection.
- * ────────────────────────────────────────────────────────
- */
-
 const mongoose = require('mongoose');
 
-const userSchema = new mongoose.Schema({
-  username: {
-    type:      String,
-    required:  [true, 'Username is required'],
-    unique:    true,
-    trim:      true,
-    minlength: 3,
-    maxlength: 30,
+function transformDocument(_doc, ret) {
+  const next = ret;
+  next.id = next._id.toString();
+  delete next._id;
+  delete next.__v;
+  delete next.passwordHash;
+  return next;
+}
+
+const userSchema = new mongoose.Schema(
+  {
+    username: {
+      type: String,
+      required: [true, 'Username is required'],
+      unique: true,
+      trim: true,
+      minlength: [3, 'Username must be at least 3 characters'],
+      maxlength: [30, 'Username must be at most 30 characters'],
+      match: [/^[a-zA-Z0-9_-]+$/, 'Username may only contain letters, numbers, underscores, and hyphens'],
+    },
+    email: {
+      type: String,
+      required: [true, 'Email is required'],
+      unique: true,
+      lowercase: true,
+      trim: true,
+      match: [/^\S+@\S+\.\S+$/, 'Email must be valid'],
+    },
+    passwordHash: {
+      type: String,
+      required: [true, 'Password hash is required'],
+      select: false,
+    },
+    savedExperiments: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Experiment',
+      },
+    ],
+    createdAt: {
+      type: Date,
+      default: Date.now,
+      immutable: true,
+    },
   },
-
-  email: {
-    type:      String,
-    required:  [true, 'Email is required'],
-    unique:    true,
-    lowercase: true,
-    trim:      true,
+  {
+    timestamps: { createdAt: false, updatedAt: true },
+    toJSON: { virtuals: true, transform: transformDocument },
+    toObject: { virtuals: true, transform: transformDocument },
   },
+);
 
-  displayName: {
-    type:    String,
-    default: '',
-  },
-
-  avatarUrl: {
-    type:    String,
-    default: '',
-  },
-
-  // References to experiments this user has saved/bookmarked
-  savedExperiments: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref:  'Experiment',
-  }],
-
-}, {
-  timestamps: true,  // Adds createdAt and updatedAt automatically
+userSchema.virtual('savedExperimentCount').get(function savedExperimentCount() {
+  return this.savedExperiments?.length || 0;
 });
-
-// Index for fast lookups on the fields we query most
-userSchema.index({ username: 1 });
-userSchema.index({ email: 1 });
 
 module.exports = mongoose.model('User', userSchema);

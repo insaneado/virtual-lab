@@ -1,211 +1,177 @@
-/**
- * server/src/routes/experiments.js
- * ────────────────────────────────────────────────────────
- * CRUD API for the Experiment Library.
- *
- * Endpoints:
- *   GET    /api/experiments          → list public experiments (paginated, filterable)
- *   GET    /api/experiments/:id      → single experiment detail
- *   POST   /api/experiments          → save a new experiment
- *   PUT    /api/experiments/:id      → update an existing experiment
- *   DELETE /api/experiments/:id      → remove an experiment
- *   POST   /api/experiments/:id/fork → fork someone else's experiment
- * ────────────────────────────────────────────────────────
- */
-
 const express = require('express');
-const router  = express.Router();
+const { body, param, query } = require('express-validator');
 const Experiment = require('../models/Experiment');
+const asyncHandler = require('../utils/asyncHandler');
+const { sanitizeString, sanitizeStringArray } = require('../utils/sanitize');
+const { requireAuth, optionalAuth } = require('../middleware/auth');
+const { AppError } = require('../middleware/errorHandler');
+const validateRequest = require('../middleware/validateRequest');
 
-// ─── LIST EXPERIMENTS ─────────────────────────────────
-// Supports: ?page=1&limit=12&category=mechanics&difficulty=beginner&search=bridge
-router.get('/', async (req, res) => {
-  try {
-    const {
-      page = 1,
-      limit = 12,
-      category,
-      difficulty,
-      search,
-    } = req.query;
+const router = express.Router();
 
-    const filter = { isPublic: true };
+function parsePositiveInteger(value, fallback, max) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+}
 
-    if (category && category !== 'all') {
-      filter.category = category;
-    }
+function visibilityFilter(user) {
+  if (!user) return { isPublic: true };
+  return { $or: [{ isPublic: true }, { authorId: user.id }] };
+}
 
-    if (difficulty && difficulty !== 'all') {
-      filter.difficulty = difficulty;
-    }
+async function loadExperimentForOwner(id, userId) {
+  const experiment = await Experiment.findById(id);
+  if (!experiment) throw new AppError('Experiment not found.', 404);
+  if (experiment.authorId.toString() !== userId) {
+    throw new AppError('Only the experiment owner can modify this experiment.', 403);
+  }
+  return experiment;
+}
 
-    if (search) {
-      filter.$text = { $search: search };
-    }
+const idParam = param('id').isMongoId();
 
-    const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+router.get(
+  '/',
+  optionalAuth,
+  [
+    query('page').optional().isInt({ min: 1 }),
+    query('limit').optional().isInt({ min: 1, max: 100 }),
+    query('search').optional().isString().trim()
+      .isLength({ max: 120 }),
+    query('tags').optional().isString().trim()
+      .isLength({ max: 300 }),
+  ],
+  validateRequest,
+  asyncHandler(async (req, res) => {
+    const page = parsePositiveInteger(req.query.page, 1, 10_000);
+    const limit = parsePositiveInteger(req.query.limit, 12, 100);
+    const filter = visibilityFilter(req.user);
+    const search = sanitizeString(req.query.search || '', 120);
+    const tags = sanitizeStringArray(String(req.query.tags || '').split(','));
+
+    if (search) filter.$text = { $search: search };
+    if (tags.length) filter.tags = { $all: tags };
+
+    const sort = search ? { score: { $meta: 'textScore' }, createdAt: -1 } : { createdAt: -1 };
+    const projection = search
+      ? { score: { $meta: 'textScore' }, bodySnapshot: 0, constraintSnapshot: 0 }
+      : { bodySnapshot: 0, constraintSnapshot: 0 };
 
     const [experiments, total] = await Promise.all([
-      Experiment.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit, 10))
-        .select('-worldState')     // Don't send the full world state in the list view
-        .populate('author', 'username displayName avatarUrl')
-        .lean(),
+      Experiment.find(filter, projection)
+        .sort(sort)
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .populate('authorId', 'username')
+        .lean({ virtuals: true }),
       Experiment.countDocuments(filter),
     ]);
 
     res.json({
       experiments,
       pagination: {
-        page:  parseInt(page, 10),
-        limit: parseInt(limit, 10),
+        page,
+        limit,
         total,
-        pages: Math.ceil(total / parseInt(limit, 10)),
+        pages: Math.max(1, Math.ceil(total / limit)),
       },
     });
-  } catch (err) {
-    console.error('[API] GET /experiments error:', err.message);
-    res.status(500).json({ error: 'Failed to fetch experiments.' });
-  }
-});
+  }),
+);
 
-// ─── GET SINGLE EXPERIMENT ────────────────────────────
-router.get('/:id', async (req, res) => {
-  try {
-    const experiment = await Experiment.findById(req.params.id)
-      .populate('author', 'username displayName avatarUrl')
-      .lean();
-
-    if (!experiment) {
-      return res.status(404).json({ error: 'Experiment not found.' });
-    }
-
-    res.json(experiment);
-  } catch (err) {
-    console.error('[API] GET /experiments/:id error:', err.message);
-    res.status(500).json({ error: 'Failed to fetch experiment.' });
-  }
-});
-
-// ─── CREATE EXPERIMENT ────────────────────────────────
-router.post('/', async (req, res) => {
-  try {
-    const {
-      title,
-      description,
-      thumbnail,
-      authorId,
-      worldState,
-      tags,
-      category,
-      difficulty,
-      isPublic,
-    } = req.body;
-
-    if (!title || !authorId || !worldState) {
-      return res.status(400).json({
-        error: 'Missing required fields: title, authorId, worldState',
-      });
-    }
-
+router.post(
+  '/',
+  requireAuth,
+  [
+    body('title').isString().trim().isLength({ min: 2, max: 120 }),
+    body('description').optional().isString().trim()
+      .isLength({ max: 2000 }),
+    body('thumbnail').optional().isString().isLength({ max: 2_000_000 }),
+    body('tags').optional().isArray({ max: 12 }),
+    body('bodySnapshot').isArray({ max: 1000 }),
+    body('constraintSnapshot').isArray({ max: 2000 }),
+    body('isPublic').optional().isBoolean(),
+  ],
+  validateRequest,
+  asyncHandler(async (req, res) => {
     const experiment = await Experiment.create({
-      title,
-      description: description || '',
-      thumbnail: thumbnail || '',
-      author: authorId,
-      worldState,
-      tags: tags || [],
-      category: category || 'custom',
-      difficulty: difficulty || 'beginner',
-      isPublic: isPublic !== false,
+      title: sanitizeString(req.body.title, 120),
+      description: sanitizeString(req.body.description || '', 2000),
+      thumbnail: req.body.thumbnail || '',
+      tags: sanitizeStringArray(req.body.tags || []),
+      authorId: req.user.id,
+      bodySnapshot: req.body.bodySnapshot,
+      constraintSnapshot: req.body.constraintSnapshot,
+      isPublic: req.body.isPublic !== false,
     });
 
     res.status(201).json(experiment);
-  } catch (err) {
-    console.error('[API] POST /experiments error:', err.message);
-    res.status(500).json({ error: 'Failed to save experiment.' });
-  }
-});
+  }),
+);
 
-// ─── UPDATE EXPERIMENT ────────────────────────────────
-router.put('/:id', async (req, res) => {
-  try {
-    const updates = req.body;
-    // Prevent overwriting the author
-    delete updates.author;
-    delete updates.authorId;
+router.get(
+  '/:id',
+  optionalAuth,
+  idParam,
+  validateRequest,
+  asyncHandler(async (req, res) => {
+    const experiment = await Experiment.findById(req.params.id).populate('authorId', 'username');
+    if (!experiment) throw new AppError('Experiment not found.', 404);
 
-    const experiment = await Experiment.findByIdAndUpdate(
-      req.params.id,
-      { $set: updates },
-      { new: true, runValidators: true }
-    );
-
-    if (!experiment) {
-      return res.status(404).json({ error: 'Experiment not found.' });
+    if (!experiment.isPublic && (!req.user || experiment.authorId.id !== req.user.id)) {
+      throw new AppError('You do not have access to this experiment.', 403);
     }
 
     res.json(experiment);
-  } catch (err) {
-    console.error('[API] PUT /experiments/:id error:', err.message);
-    res.status(500).json({ error: 'Failed to update experiment.' });
-  }
-});
+  }),
+);
 
-// ─── DELETE EXPERIMENT ────────────────────────────────
-router.delete('/:id', async (req, res) => {
-  try {
-    const experiment = await Experiment.findByIdAndDelete(req.params.id);
+router.put(
+  '/:id',
+  requireAuth,
+  idParam,
+  [
+    body('title').optional().isString().trim()
+      .isLength({ min: 2, max: 120 }),
+    body('description').optional().isString().trim()
+      .isLength({ max: 2000 }),
+    body('thumbnail').optional().isString().isLength({ max: 2_000_000 }),
+    body('tags').optional().isArray({ max: 12 }),
+    body('bodySnapshot').optional().isArray({ max: 1000 }),
+    body('constraintSnapshot').optional().isArray({ max: 2000 }),
+    body('isPublic').optional().isBoolean(),
+  ],
+  validateRequest,
+  asyncHandler(async (req, res) => {
+    const experiment = await loadExperimentForOwner(req.params.id, req.user.id);
+    const updates = {};
 
-    if (!experiment) {
-      return res.status(404).json({ error: 'Experiment not found.' });
-    }
+    if (req.body.title !== undefined) updates.title = sanitizeString(req.body.title, 120);
+    if (req.body.description !== undefined) updates.description = sanitizeString(req.body.description, 2000);
+    if (req.body.thumbnail !== undefined) updates.thumbnail = req.body.thumbnail;
+    if (req.body.tags !== undefined) updates.tags = sanitizeStringArray(req.body.tags);
+    if (req.body.bodySnapshot !== undefined) updates.bodySnapshot = req.body.bodySnapshot;
+    if (req.body.constraintSnapshot !== undefined) updates.constraintSnapshot = req.body.constraintSnapshot;
+    if (req.body.isPublic !== undefined) updates.isPublic = req.body.isPublic;
 
-    res.json({ message: 'Experiment deleted.', id: req.params.id });
-  } catch (err) {
-    console.error('[API] DELETE /experiments/:id error:', err.message);
-    res.status(500).json({ error: 'Failed to delete experiment.' });
-  }
-});
+    Object.assign(experiment, updates);
+    await experiment.save();
 
-// ─── FORK EXPERIMENT ──────────────────────────────────
-router.post('/:id/fork', async (req, res) => {
-  try {
-    const { authorId } = req.body;
+    res.json(experiment);
+  }),
+);
 
-    if (!authorId) {
-      return res.status(400).json({ error: 'authorId is required to fork.' });
-    }
-
-    const original = await Experiment.findById(req.params.id).lean();
-
-    if (!original) {
-      return res.status(404).json({ error: 'Original experiment not found.' });
-    }
-
-    // Increment the fork count on the original
-    await Experiment.findByIdAndUpdate(req.params.id, { $inc: { forkCount: 1 } });
-
-    // Create the forked copy
-    const forked = await Experiment.create({
-      title:       `${original.title} (Fork)`,
-      description: original.description,
-      author:      authorId,
-      worldState:  original.worldState,
-      tags:        original.tags,
-      category:    original.category,
-      difficulty:  original.difficulty,
-      isPublic:    true,
-      forkedFrom:  original._id,
-    });
-
-    res.status(201).json(forked);
-  } catch (err) {
-    console.error('[API] POST /experiments/:id/fork error:', err.message);
-    res.status(500).json({ error: 'Failed to fork experiment.' });
-  }
-});
+router.delete(
+  '/:id',
+  requireAuth,
+  idParam,
+  validateRequest,
+  asyncHandler(async (req, res) => {
+    const experiment = await loadExperimentForOwner(req.params.id, req.user.id);
+    await experiment.deleteOne();
+    res.status(204).send();
+  }),
+);
 
 module.exports = router;

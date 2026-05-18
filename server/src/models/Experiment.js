@@ -1,148 +1,110 @@
-/**
- * server/src/models/Experiment.js
- * ────────────────────────────────────────────────────────
- * The core data model for the Experiment Library.
- *
- * Each experiment stores a complete snapshot of the
- * Matter.js world — gravity, every body's properties,
- * and every constraint. This means any experiment can
- * be fully restored without needing the original client
- * session. Think of it like a save-file for the sandbox.
- *
- * The "forkedFrom" field enables a GitHub-style fork
- * graph so students can branch off a professor's template.
- * ────────────────────────────────────────────────────────
- */
-
 const mongoose = require('mongoose');
 
-// ─── Sub-schemas for world state ─────────────────────────
+const snapshotSchema = new mongoose.Schema({}, { _id: false, strict: false });
 
-const vectorSchema = new mongoose.Schema({
-  x: { type: Number, default: 0 },
-  y: { type: Number, default: 0 },
-}, { _id: false });
+function transformDocument(_doc, ret) {
+  const next = ret;
+  next.id = next._id.toString();
+  delete next._id;
+  delete next.__v;
+  return next;
+}
 
-const renderSchema = new mongoose.Schema({
-  fillStyle:   { type: String, default: '#6366f1' },
-  strokeStyle: { type: String, default: '#4f46e5' },
-  lineWidth:   { type: Number, default: 1.5 },
-}, { _id: false });
-
-const materialSchema = new mongoose.Schema({
-  density:     { type: Number, default: 0.001 },
-  friction:    { type: Number, default: 0.1 },
-  restitution: { type: Number, default: 0.3 },
-}, { _id: false });
-
-const collisionFilterSchema = new mongoose.Schema({
-  group:    { type: Number, default: 0 },
-  category: { type: Number, default: 1 },
-  mask:     { type: Number, default: 0xFFFFFFFF },
-}, { _id: false });
-
-const bodySchema = new mongoose.Schema({
-  label:           { type: String, default: 'Body' },
-  bodyType:        { type: String, enum: ['rectangle', 'circle', 'polygon', 'custom'], default: 'rectangle' },
-  position:        { type: vectorSchema, default: () => ({ x: 0, y: 0 }) },
-  angle:           { type: Number, default: 0 },
-  velocity:        { type: vectorSchema, default: () => ({ x: 0, y: 0 }) },
-  angularVelocity: { type: Number, default: 0 },
-  isStatic:        { type: Boolean, default: false },
-  dimensions:      { type: mongoose.Schema.Types.Mixed, default: {} },
-  render:          { type: renderSchema, default: () => ({}) },
-  material:        { type: materialSchema, default: () => ({}) },
-  collisionFilter: { type: collisionFilterSchema, default: () => ({}) },
-}, { _id: false });
-
-const constraintSchema = new mongoose.Schema({
-  label:      { type: String, default: 'Constraint' },
-  type:       { type: String, enum: ['pin', 'spring', 'rope', 'motor'], default: 'pin' },
-  bodyALabel: String,
-  bodyBLabel: String,
-  pointA:     { type: vectorSchema, default: null },
-  pointB:     { type: vectorSchema, default: null },
-  stiffness:  { type: Number, default: 1 },
-  damping:    { type: Number, default: 0 },
-  length:     { type: Number, default: 0 },
-  motorSpeed: { type: Number, default: 0 },
-}, { _id: false });
-
-// ─── Main experiment schema ─────────────────────────────
-
-const experimentSchema = new mongoose.Schema({
-  title: {
-    type:     String,
-    required: [true, 'Experiment title is required'],
-    trim:     true,
-    maxlength: 120,
+const experimentSchema = new mongoose.Schema(
+  {
+    title: {
+      type: String,
+      required: [true, 'Experiment title is required'],
+      trim: true,
+      minlength: 2,
+      maxlength: 120,
+    },
+    description: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 2000,
+    },
+    thumbnail: {
+      type: String,
+      default: '',
+      maxlength: 2_000_000,
+    },
+    tags: {
+      type: [String],
+      default: [],
+      validate: {
+        validator(value) {
+          return value.length <= 12 && value.every((tag) => tag.length <= 32);
+        },
+        message: 'Experiments may have up to 12 short tags',
+      },
+    },
+    authorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: [true, 'Author is required'],
+      index: true,
+    },
+    bodySnapshot: {
+      type: [snapshotSchema],
+      required: true,
+      default: [],
+      validate: {
+        validator(value) {
+          return value.length <= 1000;
+        },
+        message: 'Experiment cannot contain more than 1000 bodies',
+      },
+    },
+    constraintSnapshot: {
+      type: [snapshotSchema],
+      required: true,
+      default: [],
+      validate: {
+        validator(value) {
+          return value.length <= 2000;
+        },
+        message: 'Experiment cannot contain more than 2000 constraints',
+      },
+    },
+    isPublic: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+      immutable: true,
+      index: true,
+    },
   },
-
-  description: {
-    type:    String,
-    default: '',
-    maxlength: 2000,
+  {
+    timestamps: { createdAt: false, updatedAt: true },
+    toJSON: { virtuals: true, transform: transformDocument },
+    toObject: { virtuals: true, transform: transformDocument },
   },
+);
 
-  // Base64-encoded PNG snapshot of the canvas at save time
-  thumbnail: {
-    type:    String,
-    default: '',
-  },
-
-  author: {
-    type:     mongoose.Schema.Types.ObjectId,
-    ref:      'User',
-    required: true,
-  },
-
-  // ── The full physics world state ──
-  worldState: {
-    gravity:     { type: vectorSchema, default: () => ({ x: 0, y: 1 }) },
-    bodies:      { type: [bodySchema], default: [] },
-    constraints: { type: [constraintSchema], default: [] },
-  },
-
-  tags: {
-    type: [String],
-    default: [],
-  },
-
-  category: {
-    type:    String,
-    enum:    ['mechanics', 'structures', 'machines', 'custom'],
-    default: 'custom',
-  },
-
-  difficulty: {
-    type:    String,
-    enum:    ['beginner', 'intermediate', 'advanced'],
-    default: 'beginner',
-  },
-
-  isPublic: {
-    type:    Boolean,
-    default: true,
-  },
-
-  forkCount: {
-    type:    Number,
-    default: 0,
-  },
-
-  forkedFrom: {
-    type:    mongoose.Schema.Types.ObjectId,
-    ref:     'Experiment',
-    default: null,
-  },
-
-}, {
-  timestamps: true,
+experimentSchema.virtual('bodyCount').get(function bodyCount() {
+  return this.bodySnapshot?.length || 0;
 });
 
-// Full-text search on title and description for the gallery search bar
-experimentSchema.index({ title: 'text', description: 'text' });
-experimentSchema.index({ author: 1, createdAt: -1 });
-experimentSchema.index({ isPublic: 1, category: 1 });
+experimentSchema.virtual('constraintCount').get(function constraintCount() {
+  return this.constraintSnapshot?.length || 0;
+});
+
+experimentSchema.virtual('worldState').get(function worldState() {
+  return {
+    bodies: this.bodySnapshot || [],
+    constraints: this.constraintSnapshot || [],
+  };
+});
+
+experimentSchema.index({ title: 'text', tags: 'text' });
+experimentSchema.index({ authorId: 1, createdAt: -1 });
+experimentSchema.index({ isPublic: 1, createdAt: -1 });
+experimentSchema.index({ tags: 1 });
 
 module.exports = mongoose.model('Experiment', experimentSchema);

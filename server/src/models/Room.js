@@ -1,70 +1,94 @@
-/**
- * server/src/models/Room.js
- * ────────────────────────────────────────────────────────
- * Room metadata. Rooms are ephemeral — they exist in
- * MongoDB only so we can look them up by join code and
- * survive brief server hiccups. The actual participant
- * list is maintained in-memory by the socket layer and
- * periodically flushed here.
- * ────────────────────────────────────────────────────────
- */
-
 const mongoose = require('mongoose');
-const { ROOM_CONFIG } = require('../../../shared/constants');
 
-const participantSchema = new mongoose.Schema({
-  username: { type: String, required: true },
-  socketId: { type: String, required: true },
-  role:     { type: String, enum: ['host', 'editor', 'viewer'], default: 'editor' },
-}, { _id: false });
+const snapshotSchema = new mongoose.Schema({}, { _id: false, strict: false });
 
-const roomSchema = new mongoose.Schema({
-  roomCode: {
-    type:     String,
-    required: true,
-    unique:   true,
-    uppercase: true,
-    minlength: ROOM_CONFIG.CODE_LENGTH,
-    maxlength: ROOM_CONFIG.CODE_LENGTH,
+function transformDocument(_doc, ret) {
+  const next = ret;
+  next.id = next._id.toString();
+  delete next._id;
+  delete next.__v;
+  return next;
+}
+
+const roomSchema = new mongoose.Schema(
+  {
+    roomId: {
+      type: String,
+      required: [true, 'Room id is required'],
+      unique: true,
+      uppercase: true,
+      trim: true,
+      minlength: 6,
+      maxlength: 16,
+    },
+    joinCode: {
+      type: String,
+      required: [true, 'Join code is required'],
+      unique: true,
+      uppercase: true,
+      trim: true,
+      minlength: 6,
+      maxlength: 12,
+    },
+    name: {
+      type: String,
+      required: [true, 'Room name is required'],
+      trim: true,
+      minlength: 2,
+      maxlength: 80,
+    },
+    ownerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: [true, 'Room owner is required'],
+      index: true,
+    },
+    bodies: {
+      type: [snapshotSchema],
+      default: [],
+      validate: {
+        validator(value) {
+          return value.length <= 1000;
+        },
+        message: 'Room cannot contain more than 1000 bodies',
+      },
+    },
+    constraints: {
+      type: [snapshotSchema],
+      default: [],
+      validate: {
+        validator(value) {
+          return value.length <= 2000;
+        },
+        message: 'Room cannot contain more than 2000 constraints',
+      },
+    },
+    lastUpdatedAt: {
+      type: Date,
+      default: Date.now,
+      index: true,
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
   },
-
-  hostUser: {
-    type: String,   // Username (not ObjectId — keeping it lightweight for prototype)
-    required: true,
+  {
+    timestamps: true,
+    toJSON: { virtuals: true, transform: transformDocument },
+    toObject: { virtuals: true, transform: transformDocument },
   },
+);
 
-  participants: {
-    type: [participantSchema],
-    default: [],
-  },
-
-  // If the room was initialized from a saved experiment
-  experimentId: {
-    type:    mongoose.Schema.Types.ObjectId,
-    ref:     'Experiment',
-    default: null,
-  },
-
-  isActive: {
-    type:    Boolean,
-    default: true,
-  },
-
-  maxUsers: {
-    type:    Number,
-    default: ROOM_CONFIG.MAX_USERS,
-  },
-
-  lastActivity: {
-    type:    Date,
-    default: Date.now,
-  },
-
-}, {
-  timestamps: true,
+roomSchema.virtual('bodyCount').get(function bodyCount() {
+  return this.bodies?.length || 0;
 });
 
-roomSchema.index({ roomCode: 1 });
-roomSchema.index({ isActive: 1 });
+roomSchema.virtual('constraintCount').get(function constraintCount() {
+  return this.constraints?.length || 0;
+});
+
+roomSchema.index({ ownerId: 1, lastUpdatedAt: -1 });
 
 module.exports = mongoose.model('Room', roomSchema);

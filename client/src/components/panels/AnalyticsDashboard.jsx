@@ -1,134 +1,97 @@
-/**
- * client/src/components/panels/AnalyticsDashboard.jsx
- * ────────────────────────────────────────────────────────
- * Live physics analytics with Recharts line charts.
- * Shows kinetic energy, average speed, and collision
- * force over time. Collapsible panel.
- * ────────────────────────────────────────────────────────
- */
-
-import React, { useState } from 'react';
+import React, { memo, useMemo, useState } from 'react';
+import PropTypes from 'prop-types';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Area, AreaChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
+import useAnalyticsStore from '../../stores/useAnalyticsStore.js';
+import useCanvasStore from '../../stores/useCanvasStore.js';
 
-const CHART_COLORS = {
-  ke:       '#6366f1',
-  speed:    '#22d3ee',
-  force:    '#f43f5e',
-};
+const COLORS = ['#22d3ee', '#6366f1', '#10b981', '#f43f5e', '#f59e0b'];
+const TABS = ['Velocity', 'Kinetic Energy', 'Forces'];
 
-// custom tooltip styling
-function CustomTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="chart-tooltip">
-      {payload.map((entry, i) => (
-        <div key={i} style={{ color: entry.color, fontSize: 11 }}>
-          {entry.name}: <strong>{entry.value}</strong>
-        </div>
-      ))}
-    </div>
-  );
+function makeChartData(seriesByBody, watchedBodyIds, tab) {
+  const rows = new Map();
+  watchedBodyIds.slice(0, 5).forEach((bodyId) => {
+    (seriesByBody[bodyId] || []).forEach((sample) => {
+      const key = sample.t;
+      const row = rows.get(key) || { t: key };
+      row[bodyId] = tab === 'Velocity' ? sample.velocity : tab === 'Kinetic Energy' ? sample.kineticEnergy : sample.force;
+      rows.set(key, row);
+    });
+  });
+  return Array.from(rows.values()).slice(-100);
 }
 
-export default function AnalyticsDashboard({ telemetry, bodyVectors, isOpen, onToggle }) {
-  const [activeChart, setActiveChart] = useState('ke'); // ke | speed | force
-
-  const latestSample = telemetry[telemetry.length - 1] || {};
+function AnalyticsDashboard({ open, onToggle }) {
+  const [tab, setTab] = useState('Velocity');
+  const watchedBodyIds = useCanvasStore((state) => state.watchedBodyIds);
+  const timeseriesData = useAnalyticsStore((state) => state.timeseriesData);
+  const chartData = useMemo(
+    () => makeChartData(timeseriesData, watchedBodyIds, tab),
+    [timeseriesData, watchedBodyIds, tab]
+  );
 
   return (
-    <div className={`analytics-panel glass-panel-solid ${isOpen ? 'open' : 'collapsed'}`}>
-      {/* Header toggle */}
-      <button className="analytics-header" onClick={onToggle}>
-        <div className="flex items-center gap-2">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <polyline points="22,12 18,12 15,21 9,3 6,12 2,12" />
-          </svg>
-          <span className="text-xs font-semibold">ANALYTICS</span>
-        </div>
-        <div className="flex items-center gap-3">
-          {/* live stats badges */}
-          <span className="stat-badge" style={{ borderColor: CHART_COLORS.ke }}>
-            KE: {latestSample.ke?.toFixed(1) || '0.0'}
-          </span>
-          <span className="stat-badge" style={{ borderColor: CHART_COLORS.speed }}>
-            v̄: {latestSample.avgSpeed?.toFixed(1) || '0.0'}
-          </span>
-          <span className="stat-badge" style={{ borderColor: CHART_COLORS.force }}>
-            F: {latestSample.maxForce?.toFixed(1) || '0.0'}
-          </span>
-          <svg
-            width="14" height="14" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" strokeWidth="2"
-            style={{ transform: isOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}
-          >
-            <polyline points="6,9 12,15 18,9" />
-          </svg>
-        </div>
+    <section className={`analytics-dock ${open ? 'open' : ''}`}>
+      <button className="analytics-titlebar" type="button" onClick={onToggle}>
+        <span>Analytics</span>
+        <span>{open ? 'Hide' : 'Show'}</span>
       </button>
-
-      {isOpen && (
-        <div className="analytics-body">
-          {/* Chart selector tabs */}
-          <div className="chart-tabs">
-            {[
-              { key: 'ke', label: 'Kinetic Energy' },
-              { key: 'speed', label: 'Avg Speed' },
-              { key: 'force', label: 'Collision Force' },
-            ].map(tab => (
+      {open && (
+        <div className="analytics-content">
+          <div className="chart-tabs" role="tablist" aria-label="Analytics view">
+            {TABS.map((item) => (
               <button
-                key={tab.key}
-                className={`chart-tab ${activeChart === tab.key ? 'active' : ''}`}
-                style={{ '--tab-color': CHART_COLORS[tab.key] }}
-                onClick={() => setActiveChart(tab.key)}
+                key={item}
+                className={`chart-tab ${tab === item ? 'active' : ''}`}
+                type="button"
+                onClick={() => setTab(item)}
               >
-                {tab.label}
+                {item}
               </button>
             ))}
           </div>
-
-          {/* Chart */}
           <div className="chart-container">
-            <ResponsiveContainer width="100%" height={140}>
-              <AreaChart data={telemetry} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id={`grad-${activeChart}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={CHART_COLORS[activeChart]} stopOpacity={0.3} />
-                    <stop offset="95%" stopColor={CHART_COLORS[activeChart]} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" />
-                <XAxis
-                  dataKey="t" tick={false} axisLine={{ stroke: 'rgba(100,116,139,0.2)' }}
-                />
-                <YAxis
-                  tick={{ fontSize: 10, fill: '#64748b' }}
-                  axisLine={false} tickLine={false} width={35}
-                />
-                <Tooltip content={<CustomTooltip />} />
-                <Area
-                  type="monotone"
-                  dataKey={activeChart === 'ke' ? 'ke' : activeChart === 'speed' ? 'avgSpeed' : 'maxForce'}
-                  name={activeChart === 'ke' ? 'Kinetic Energy' : activeChart === 'speed' ? 'Avg Speed' : 'Max Force'}
-                  stroke={CHART_COLORS[activeChart]}
-                  fill={`url(#grad-${activeChart})`}
-                  strokeWidth={2}
-                  dot={false}
-                  isAnimationActive={false}
-                />
-              </AreaChart>
+            <ResponsiveContainer width="100%" height={180}>
+              <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <CartesianGrid stroke="rgba(148,163,184,0.16)" strokeDasharray="3 3" />
+                <XAxis dataKey="t" tick={{ fontSize: 10, fill: '#94a3b8' }} />
+                <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} width={34} />
+                <Tooltip contentStyle={{ background: '#111827', border: '1px solid #334155' }} />
+                {watchedBodyIds.slice(0, 5).map((bodyId, index) => (
+                  <Line
+                    key={bodyId}
+                    type="monotone"
+                    dataKey={bodyId}
+                    name={bodyId}
+                    stroke={COLORS[index % COLORS.length]}
+                    strokeWidth={2}
+                    dot={false}
+                    isAnimationActive={false}
+                    connectNulls
+                  />
+                ))}
+              </LineChart>
             </ResponsiveContainer>
           </div>
-
-          {/* Body count and vector summary */}
-          <div className="analytics-footer">
-            <span>Bodies: <strong>{latestSample.bodyCount || 0}</strong></span>
-            <span>Vectors tracked: <strong>{bodyVectors.length}</strong></span>
-          </div>
+          <p className="analytics-footnote">
+            Watching {watchedBodyIds.length} body{watchedBodyIds.length === 1 ? '' : 'ies'}.
+          </p>
         </div>
       )}
-    </div>
+    </section>
   );
 }
+
+AnalyticsDashboard.propTypes = {
+  open: PropTypes.bool.isRequired,
+  onToggle: PropTypes.func.isRequired,
+};
+
+export default memo(AnalyticsDashboard);

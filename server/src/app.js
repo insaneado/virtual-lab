@@ -1,60 +1,82 @@
-/**
- * server/src/app.js
- * ────────────────────────────────────────────────────────
- * Express application factory.
- *
- * Sets up CORS, JSON parsing, route mounting, and basic
- * error handling. Exported as a plain Express app so that
- * index.js can wrap it with http.createServer for Socket.io.
- * ────────────────────────────────────────────────────────
- */
-
+const compression = require('compression');
+const cookieParser = require('cookie-parser');
+const cors = require('cors');
 const express = require('express');
-const cors    = require('cors');
-const config  = require('./config/env');
-
-// Route modules
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const mongoose = require('mongoose');
+const pinoHttp = require('pino-http');
+const config = require('./config/env');
+const authRoutes = require('./routes/auth');
 const experimentRoutes = require('./routes/experiments');
-const roomRoutes       = require('./routes/rooms');
+const roomRoutes = require('./routes/rooms');
+const logger = require('./utils/logger');
+const { AppError, errorHandler, notFound } = require('./middleware/errorHandler');
 
 const app = express();
 
-// ─── Middleware ────────────────────────────────────────
+function corsOrigin(origin, callback) {
+  if (!origin || config.CLIENT_ORIGINS.includes('*') || config.CLIENT_ORIGINS.includes(origin)) {
+    return callback(null, true);
+  }
 
-app.use(cors({
-  origin: config.CLIENT_ORIGIN,
-  credentials: true,
-}));
+  return callback(new AppError(`Origin ${origin} is not allowed by CORS.`, 403));
+}
 
-// Parse JSON bodies — cap at 5MB because experiment
-// world state snapshots can get chunky with thumbnails
-app.use(express.json({ limit: '5mb' }));
+app.set('trust proxy', 1);
 
-// ─── Routes ───────────────────────────────────────────
+app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(
+  cors({
+    origin: corsOrigin,
+    credentials: true,
+  }),
+);
+app.use(compression());
+app.use(express.json({ limit: '10mb' }));
+app.use(cookieParser());
+app.use(
+  pinoHttp({
+    logger,
+    autoLogging: config.isTest ? false : { ignore: (req) => req.url === '/health' },
+  }),
+);
+app.use(
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: config.isTest ? 10_000 : 300,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    message: { error: 'Too many requests. Please try again later.' },
+  }),
+);
 
-app.use('/api/experiments', experimentRoutes);
-app.use('/api/rooms',       roomRoutes);
+function healthPayload() {
+  const dbStates = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  const { readyState } = mongoose.connection;
 
-// Health check — useful for load balancers and monitoring
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
+  return {
+    status: readyState === 1 ? 'ok' : 'degraded',
     uptime: process.uptime(),
-    timestamp: Date.now(),
-  });
+    db: dbStates[readyState] || 'unknown',
+  };
+}
+
+app.get('/health', (_req, res) => {
+  const payload = healthPayload();
+  res.status(payload.status === 'ok' ? 200 : 503).json(payload);
 });
 
-// ─── 404 catch-all ────────────────────────────────────
-
-app.use((req, res) => {
-  res.status(404).json({ error: `Route ${req.method} ${req.path} not found.` });
+app.get('/api/health', (_req, res) => {
+  const payload = healthPayload();
+  res.status(payload.status === 'ok' ? 200 : 503).json(payload);
 });
 
-// ─── Global error handler ─────────────────────────────
+app.use('/api/auth', authRoutes);
+app.use('/api/rooms', roomRoutes);
+app.use('/api/experiments', experimentRoutes);
 
-app.use((err, req, res, _next) => {
-  console.error('[App] Unhandled error:', err.stack || err.message);
-  res.status(500).json({ error: 'Internal server error.' });
-});
+app.use(notFound);
+app.use(errorHandler);
 
 module.exports = app;

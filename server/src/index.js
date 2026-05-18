@@ -1,56 +1,77 @@
-/**
- * server/src/index.js
- * ────────────────────────────────────────────────────────
- * Entry point — boots HTTP server, Socket.io, and MongoDB.
- * ────────────────────────────────────────────────────────
- */
-
-const http   = require('http');
+const http = require('http');
 const { Server } = require('socket.io');
-const app    = require('./app');
+const mongoose = require('mongoose');
+const app = require('./app');
 const config = require('./config/env');
-const connectDB = require('./config/db');
-const { authMiddleware } = require('./sockets/middleware');
-const { registerRoomHandlers } = require('./sockets/roomHandler');
-const { registerSyncHandlers } = require('./sockets/syncHandler');
+const { connectDB, closeDB } = require('./config/db');
+const { attachAgentMiddleware } = require('./sockets/agentMiddleware');
+const logger = require('./utils/logger');
 
 const server = http.createServer(app);
 
-// ─── Socket.io setup ──────────────────────────────────
 const io = new Server(server, {
   cors: {
-    origin: config.CLIENT_ORIGIN,
+    origin: config.CLIENT_ORIGINS,
     methods: ['GET', 'POST'],
     credentials: true,
   },
   pingInterval: 10000,
   pingTimeout: 5000,
-  maxHttpBufferSize: 1e6,  // 1MB max per message
+  maxHttpBufferSize: 1e6,
 });
 
-// Auth middleware — extracts username from handshake
-io.use(authMiddleware);
+attachAgentMiddleware(io);
 
-// ─── Connection handler ───────────────────────────────
-io.on('connection', (socket) => {
-  console.log(`[WS] Connected: ${socket.data.username} (${socket.id})`);
-
-  // Register all event handlers on this socket
-  registerRoomHandlers(io, socket);
-  registerSyncHandlers(io, socket);
-});
-
-// ─── Boot sequence ────────────────────────────────────
 async function start() {
   await connectDB();
 
-  server.listen(config.PORT, () => {
-    console.log(`[Server] Running on http://localhost:${config.PORT}`);
-    console.log(`[Server] Accepting clients from ${config.CLIENT_ORIGIN}`);
+  return new Promise((resolve) => {
+    server.listen(config.PORT, () => {
+      logger.info(
+        { port: config.PORT, origins: config.CLIENT_ORIGINS },
+        'VIRTUAL-LAB API listening',
+      );
+      resolve(server);
+    });
   });
 }
 
-start().catch((err) => {
-  console.error('[Server] Fatal startup error:', err);
-  process.exit(1);
-});
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal }, 'Graceful shutdown started');
+
+  const forceExit = setTimeout(() => {
+    logger.error('Graceful shutdown timed out');
+    process.exit(1);
+  }, 10_000);
+
+  server.close(async (err) => {
+    if (err) logger.error({ err }, 'HTTP server close failed');
+    io.close();
+    await closeDB();
+    clearTimeout(forceExit);
+    logger.info('Graceful shutdown complete');
+    process.exit(err ? 1 : 0);
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+if (require.main === module) {
+  start().catch((err) => {
+    logger.error({ err, dbState: mongoose.connection.readyState }, 'Fatal startup error');
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  app,
+  server,
+  io,
+  start,
+  shutdown,
+};
